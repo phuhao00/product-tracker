@@ -1,0 +1,16 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+
+# 运行产物：采集数据、生成的报告与日志
+data/*.json
+reports/*
+logs/*
+*.log
+
+# 保留目录结构
+!.gitkeep

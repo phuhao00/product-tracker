@@ -1,0 +1,127 @@
+# Product Tracker 配置文件
+# 定期拉取产品发现平台数据并生成分析报告
+
+# 基础配置（版本号由 main.py 单一维护，此处不再重复）
+app:
+  name: "Product Tracker"
+  data_dir: "./data"        # 相对路径按项目根目录解析
+  reports_dir: "./reports"
+
+# 定时任务配置
+scheduler:
+  enabled: true
+  # 启动 schedule 命令后立即跑一次，而不是等到下一个时间点
+  run_on_start: true
+  # use_cron 为 true 时按 cron_expression 执行，否则按 interval_minutes
+  use_cron: false
+  cron_expression: "0 9 * * *"   # 每天 09:00
+  interval_minutes: 1440         # 24小时
+
+# 平台配置
+# rate_limit: 同一平台两次请求的最小间隔（秒）
+# timeout/max_retries: 单次请求超时与重试次数
+platforms:
+  producthunt:
+    enabled: true
+    name: "Product Hunt"
+    base_url: "https://www.producthunt.com"
+    # 官方 Atom feed，比抓取页面稳定；注意 feed 不含票数
+    feed_url: "https://www.producthunt.com/feed"
+    # feed 不可用时的回退数据源
+    alternative_source: "https://hunted.space"
+    rate_limit: 3
+    timeout: 30
+    max_retries: 3
+    max_items: 50
+
+  hackernews:
+    enabled: true
+    name: "Hacker News"
+    base_url: "https://news.ycombinator.com"
+    # Algolia 搜索 API：一次请求即可拿到票数与评论数
+    search_endpoint: "https://hn.algolia.com/api/v1"
+    # Algolia 不可用时回退到官方 API（需逐条请求，较慢）
+    api_endpoint: "https://hacker-news.firebaseio.com/v0"
+    # 只取最近 N 天的 Show HN
+    window_days: 7
+    rate_limit: 1
+    timeout: 30
+    max_retries: 3
+    max_items: 40
+
+  betalist:
+    enabled: true
+    name: "BetaList"
+    base_url: "https://betalist.com"
+    rate_limit: 3
+    timeout: 30
+    max_retries: 3
+    max_items: 30
+
+  github_trending:
+    enabled: true
+    name: "GitHub Trending"
+    base_url: "https://github.com"
+    # 榜单周期，可选 daily / weekly / monthly
+    periods:
+      - "daily"
+      - "weekly"
+    # 语言筛选，空字符串表示全部语言；可加 "python"、"rust" 等
+    languages:
+      - ""
+    rate_limit: 2
+    timeout: 30
+    max_retries: 3
+    max_items: 30
+
+  # devhunt.org 目前全站返回错误页，站点已不可用，故默认关闭
+  devhunt:
+    enabled: false
+    name: "DevHunt"
+    base_url: "https://devhunt.org"
+    rate_limit: 3
+    timeout: 20
+    max_retries: 1
+    max_items: 20
+
+# 分析配置
+analysis:
+  # 与过去多少天的数据对比，用于识别新品与关键词涨跌
+  trend_window_days: 7
+  # 全站热门榜条目数
+  top_products_limit: 20
+  # 需要跟踪的关键词（报告中的"趋势分析"部分）
+  keywords:
+    - "AI"
+    - "agent"
+    - "SaaS"
+    - "developer tools"
+    - "productivity"
+    - "automation"
+    - "open source"
+    - "no-code"
+  # 默认生成的报告格式，命令行 --format 可覆盖
+  report_formats:
+    - "html"
+    - "json"
+    - "markdown"
+  # 数据与报告的保留天数，超期由 clean 命令或每次运行后自动清理
+  retention_days: 90
+
+# 通知配置（暂未实现）
+notifications:
+  enabled: false
+  channels: []
+
+# 代理配置（可选），开启后对所有平台生效
+proxy:
+  enabled: false
+  http: ""
+  https: ""
+
+# 日志配置
+logging:
+  level: "INFO"           # DEBUG / INFO / WARNING / ERROR
+  file: "./logs/tracker.log"
+  max_size_mb: 10
+  backup_count: 5
