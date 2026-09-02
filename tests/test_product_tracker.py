@@ -5,6 +5,7 @@
 
 import json
 from datetime import datetime
+from pathlib import Path
 
 import pytest
 
@@ -286,6 +287,75 @@ def test_deduplicate_does_not_merge_short_names_from_different_urls():
     assert len(ProductTracker.deduplicate(products)) == 2
 
 
+# --------------------------------------------------------------- 历史窗口
+
+def _write_snapshot(data_dir, stamp, products):
+    payload = {
+        'collected_at': f"2026-09-0{stamp}T10:00:00",
+        'total': len(products),
+        'products': products,
+    }
+    path = data_dir / f"products_2026090{stamp}_100000.json"
+    path.write_text(json.dumps(payload), encoding='utf-8')
+    return path
+
+
+def _tracker(tmp_path):
+    return ProductTracker({
+        'app': {'data_dir': str(tmp_path / 'data'), 'reports_dir': str(tmp_path / 'reports')},
+        'analysis': {'trend_window_days': 7},
+    })
+
+
+def test_load_history_tracks_previous_votes_per_product(tmp_path):
+    tracker = _tracker(tmp_path)
+    _write_snapshot(tracker.data_dir, 1, [{'id': 'a', 'votes': 10}])
+    _write_snapshot(tracker.data_dir, 2, [{'id': 'a', 'votes': 25}, {'id': 'b', 'votes': 4}])
+
+    window = tracker.load_history()
+
+    # prev_votes 应停在最近一次快照，而不是最早那次
+    assert window.product_stats['a']['prev_votes'] == 25
+    assert window.product_stats['a']['appearances'] == 2
+    assert window.product_stats['a']['first_seen'].startswith('2026-09-01')
+    assert window.product_stats['b']['prev_votes'] == 4
+
+
+def test_load_history_excludes_the_current_snapshot(tmp_path):
+    tracker = _tracker(tmp_path)
+    _write_snapshot(tracker.data_dir, 1, [{'id': 'a', 'votes': 10}])
+    latest = _write_snapshot(tracker.data_dir, 2, [{'id': 'a', 'votes': 25}])
+
+    window = tracker.load_history(exclude=latest)
+
+    assert window.snapshots == 1
+    assert window.product_stats['a']['prev_votes'] == 10
+
+
+def test_load_history_excludes_by_real_path_not_string_identity(tmp_path, monkeypatch):
+    """排除失败会让本次快照成为自己的历史，动量恒为 0 且不报错"""
+    tracker = _tracker(tmp_path)
+    _write_snapshot(tracker.data_dir, 1, [{'id': 'a', 'votes': 10}])
+    latest = _write_snapshot(tracker.data_dir, 2, [{'id': 'a', 'votes': 25}])
+
+    monkeypatch.chdir(tracker.data_dir)
+    window = tracker.load_history(exclude=Path(latest.name))
+
+    assert window.snapshots == 1
+    assert window.product_stats['a']['prev_votes'] == 10
+
+
+def test_load_history_skips_unreadable_snapshots(tmp_path):
+    tracker = _tracker(tmp_path)
+    _write_snapshot(tracker.data_dir, 1, [{'id': 'a', 'votes': 10}])
+    (tracker.data_dir / 'products_20260902_100000.json').write_text('{oops', encoding='utf-8')
+
+    window = tracker.load_history()
+
+    assert window.snapshots == 1
+    assert 'a' in window.product_stats
+
+
 # ------------------------------------------------------------------- 分析
 
 @pytest.fixture
@@ -413,6 +483,8 @@ def test_analyze_empty_input_returns_warning(analyzer):
     ('JobGlance', 'Rank every visa and remote job by your resume fit', 'career'),
     ('open-seo', 'Open source alternative to Semrush and Ahrefs', 'oss_alt'),
     ('Vaultly', 'Zero-knowledge encryption for your passwords', 'security'),
+    # "from scratch" 描述的是形式而非领域，不该盖过 LLM 这样的领域词
+    ('minimind', 'Train a 64M-parameter LLM from scratch in just 2h', 'llm'),
 ])
 def test_classify_assigns_expected_theme(name, description, expected):
     primary, matched = classify(name, description)
@@ -652,6 +724,156 @@ def test_is_new_is_not_guessed_without_history(analyzer, mixed_scale_products):
 
     # 没有历史数据时无法判断新旧，不应把所有产品都标成新品
     assert all(p['is_new'] is False for p in result.products)
+
+
+# --------------------------------------------------------------- 单品动量
+
+@pytest.fixture
+def returning_products():
+    return [
+        {'id': 'hn_up', 'name': 'Rising tool', 'description': 'a developer cli',
+         'url': 'https://a', 'platform': 'hackernews', 'votes': 90, 'comments': 3,
+         'category': '', 'tags': []},
+        {'id': 'hn_down', 'name': 'Fading tool', 'description': 'a developer cli',
+         'url': 'https://b', 'platform': 'hackernews', 'votes': 20, 'comments': 1,
+         'category': '', 'tags': []},
+        {'id': 'ph_x', 'name': 'Feed product', 'description': 'a saas dashboard',
+         'url': 'https://c', 'platform': 'producthunt', 'votes': 0, 'comments': 0,
+         'category': '', 'tags': []},
+    ]
+
+
+def _stats(**kwargs):
+    return {
+        key: {'prev_votes': prev, 'first_seen': '2026-09-01T10:00:00', 'appearances': 3}
+        for key, prev in kwargs.items()
+    }
+
+
+def test_votes_delta_is_computed_against_previous_snapshot(analyzer, returning_products):
+    result = analyzer.analyze(
+        returning_products,
+        history=[{'id': 'hn_up'}, {'id': 'hn_down'}, {'id': 'ph_x'}],
+        product_stats=_stats(hn_up=30, hn_down=25),
+    )
+    deltas = {p['id']: p['votes_delta'] for p in result.products}
+
+    assert deltas['hn_up'] == 60
+    assert deltas['hn_down'] == -5
+
+
+def test_platforms_without_real_votes_get_no_fabricated_momentum(analyzer, returning_products):
+    """PH feed 的位次波动不代表热度变化，不能拿来编造动量"""
+    result = analyzer.analyze(
+        returning_products,
+        history=[{'id': 'ph_x'}],
+        product_stats=_stats(ph_x=0),
+    )
+    row = next(p for p in result.products if p['id'] == 'ph_x')
+
+    assert row['votes_delta'] is None
+    assert row['appearances'] == 3
+
+
+def test_delta_is_none_for_first_time_products(analyzer, returning_products):
+    result = analyzer.analyze(
+        returning_products,
+        history=[{'id': 'hn_up'}],
+        product_stats=_stats(hn_up=30),
+    )
+    fresh = next(p for p in result.products if p['id'] == 'hn_down')
+
+    assert fresh['votes_delta'] is None
+    assert fresh['appearances'] == 0
+
+
+def test_surge_signal_reports_accelerating_products(analyzer, returning_products):
+    result = analyzer.analyze(
+        returning_products,
+        history=[{'id': 'hn_up'}, {'id': 'hn_down'}],
+        product_stats=_stats(hn_up=30, hn_down=25),
+    )
+    surge = next((s for s in result.signals if s['kind'] == 'surge'), None)
+
+    assert surge is not None
+    assert [item['name'] for item in surge['evidence']] == ['Rising tool']
+    assert '+60' in surge['evidence'][0]['note']
+
+
+def test_surge_signal_ignores_small_absolute_gains(analyzer):
+    """1 票涨到 3 票是 200%，但没有信息量"""
+    products = [
+        {'id': 'tiny', 'name': 'Tiny', 'description': 'a cli', 'url': 'https://a',
+         'platform': 'hackernews', 'votes': 3, 'comments': 0, 'category': '', 'tags': []},
+    ]
+
+    result = analyzer.analyze(
+        products, history=[{'id': 'tiny'}], product_stats=_stats(tiny=1)
+    )
+
+    assert not any(s['kind'] == 'surge' for s in result.signals)
+
+
+def test_surge_ranks_by_relative_growth_not_absolute(analyzer):
+    """+6000 星（30%）不如 20 票涨到 80（300%）说明问题"""
+    products = [
+        {'id': 'gh_big', 'name': 'Big repo', 'description': 'a cli', 'url': 'https://a',
+         'platform': 'github_trending', 'votes': 26000, 'comments': 0,
+         'category': '', 'tags': []},
+        {'id': 'gh_small', 'name': 'Small repo', 'description': 'a cli', 'url': 'https://b',
+         'platform': 'github_trending', 'votes': 80, 'comments': 0,
+         'category': '', 'tags': []},
+    ]
+
+    result = analyzer.analyze(
+        products,
+        history=[{'id': 'gh_big'}, {'id': 'gh_small'}],
+        product_stats=_stats(gh_big=20000, gh_small=20),
+    )
+    surge = next(s for s in result.signals if s['kind'] == 'surge')
+
+    assert [item['name'] for item in surge['evidence']] == ['Small repo', 'Big repo']
+
+
+def test_surge_ignores_low_relative_growth_on_large_bases(analyzer):
+    """两万星涨 500 属于正常增速，不该被当成加速上涨"""
+    products = [
+        {'id': 'gh_big', 'name': 'Big repo', 'description': 'a cli', 'url': 'https://a',
+         'platform': 'github_trending', 'votes': 20500, 'comments': 0,
+         'category': '', 'tags': []},
+    ]
+
+    result = analyzer.analyze(
+        products, history=[{'id': 'gh_big'}], product_stats=_stats(gh_big=20000)
+    )
+
+    assert not any(s['kind'] == 'surge' for s in result.signals)
+
+
+def test_dashboard_exposes_momentum_column_and_filter(tmp_path, analyzer, returning_products):
+    generator = ReportGenerator({'reports_dir': str(tmp_path)})
+    result = analyzer.analyze(
+        returning_products,
+        history=[{'id': 'hn_up'}, {'id': 'hn_down'}],
+        product_stats=_stats(hn_up=30, hn_down=25),
+    )
+    html = open(generator.generate(result, 'html'), encoding='utf-8').read()
+
+    assert 'data-sort="votes_delta"' in html
+    assert 'data-quick="surge"' in html
+    assert '"votes_delta":60' in html
+
+
+def test_markdown_surfaces_growth_next_to_evidence(tmp_path, analyzer, returning_products):
+    generator = ReportGenerator({'reports_dir': str(tmp_path)})
+    result = analyzer.analyze(
+        returning_products,
+        history=[{'id': 'hn_up'}, {'id': 'hn_down'}],
+        product_stats=_stats(hn_up=30, hn_down=25),
+    )
+    md = open(generator.generate(result, 'markdown'), encoding='utf-8').read()
+
+    assert '+60' in md
 
 
 # ------------------------------------------------------------------- 报告

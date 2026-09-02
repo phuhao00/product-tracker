@@ -10,6 +10,7 @@ import logging.handlers
 import re
 import sys
 import time
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
@@ -31,6 +32,16 @@ DATA_FILE_PATTERN = 'products_*.json'
 REPORT_FILE_PATTERN = 'report_*'
 # 归一化 URL 时剥离的跟踪参数
 TRACKING_PARAM_RE = re.compile(r'[?&](utm_[^&=]*|ref|ref_src|source)=[^&]*')
+
+
+@dataclass
+class HistoryWindow:
+    """趋势窗口内的历史数据"""
+    products: List[Dict] = field(default_factory=list)
+    # product_id -> {prev_votes, first_seen, appearances}
+    product_stats: Dict[str, Dict] = field(default_factory=dict)
+    snapshots: int = 0
+    window_days: int = 7
 
 
 def configure_logging(config: Dict, verbose: bool = False) -> None:
@@ -245,15 +256,24 @@ class ProductTracker:
 
         return merged
 
-    def load_history(self, exclude: Optional[Path] = None) -> List[Dict]:
-        """加载趋势窗口内的历史产品数据"""
+    def load_history(self, exclude: Optional[Path] = None) -> HistoryWindow:
+        """加载趋势窗口内的历史数据
+
+        一次遍历同时得到两样东西：
+        - products: 打平的历史产品列表，用于赛道占比与关键词的窗口对比
+        - product_stats: 每个产品上一次的票数、窗口内首次出现时间与出现次数，
+          用于计算单个产品的热度动量（"这个仓库比上次多了多少星"）
+        """
         window_days = self.analysis_config.get('trend_window_days', 7)
         cutoff = time.time() - window_days * 86400
-        history: List[Dict] = []
-        files = 0
+        window = HistoryWindow(window_days=window_days)
+        # 按真实路径比较：若排除失败，本次快照会被当成自己的历史，
+        # 导致所有动量恒为 0 且不报错
+        excluded = exclude.resolve() if exclude else None
 
+        # 文件名带时间戳，升序遍历后 prev_votes 自然停留在最近一次快照的值
         for path in sorted(self.data_dir.glob(DATA_FILE_PATTERN)):
-            if exclude and path == exclude:
+            if excluded and path.resolve() == excluded:
                 continue
             if path.stat().st_mtime < cutoff:
                 continue
@@ -264,15 +284,33 @@ class ProductTracker:
                 logger.warning(f"Skipping unreadable history file {path.name}: {e}")
                 continue
 
-            history.extend(payload.get('products') or [])
-            files += 1
+            products = payload.get('products') or []
+            window.products.extend(products)
+            window.snapshots += 1
 
-        if files:
+            collected_at = payload.get('collected_at') or ''
+            for product in products:
+                product_id = product.get('id')
+                if not product_id:
+                    continue
+                stats = window.product_stats.get(product_id)
+                if stats is None:
+                    window.product_stats[product_id] = {
+                        'prev_votes': product.get('votes') or 0,
+                        'first_seen': collected_at,
+                        'appearances': 1,
+                    }
+                else:
+                    stats['prev_votes'] = product.get('votes') or 0
+                    stats['appearances'] += 1
+
+        if window.snapshots:
             logger.info(
-                f"Loaded {len(history)} historical products from {files} file(s) "
-                f"within {window_days} days"
+                f"Loaded {len(window.products)} historical products from "
+                f"{window.snapshots} file(s) within {window_days} days "
+                f"({len(window.product_stats)} distinct)"
             )
-        return history
+        return window
 
     def save_raw_data(self, products: List[Product]) -> Path:
         """保存原始数据"""
@@ -297,7 +335,7 @@ class ProductTracker:
         self,
         products: List[Product],
         formats: List[str] = None,
-        history: Optional[List[Dict]] = None,
+        history: Optional[HistoryWindow] = None,
     ) -> List[str]:
         """分析数据并生成报告"""
         if not products:
@@ -307,7 +345,11 @@ class ProductTracker:
         products_dict = [p.to_dict() for p in products]
 
         logger.info("Analyzing data...")
-        analysis_result = self.analyzer.analyze(products_dict, history=history)
+        analysis_result = self.analyzer.analyze(
+            products_dict,
+            history=history.products if history else None,
+            product_stats=history.product_stats if history else None,
+        )
 
         if formats is None:
             formats = self.analysis_config.get('report_formats') or ['html']
@@ -435,7 +477,9 @@ def cmd_report(tracker: ProductTracker, args) -> int:
         return 1
 
     history = tracker.load_history(exclude=latest)
-    result = tracker.analyzer.analyze(products, history=history)
+    result = tracker.analyzer.analyze(
+        products, history=history.products, product_stats=history.product_stats
+    )
 
     reports = []
     for fmt in (args.format or ['html']):

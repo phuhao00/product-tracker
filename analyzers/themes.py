@@ -86,7 +86,7 @@ THEME_DEFINITIONS: List[Tuple[str, str, Tuple[str, ...]]] = [
         'learn', 'learning', 'course', 'education', 'study', 'tutor', 'quiz',
         'flashcard', 'teach', 'classroom', 'research', 'speaking',
         'pronunciation', 'language learning', 'mentor', 'coach', 'practice',
-        'curriculum', 'from scratch',
+        'curriculum',
     )),
     ('game', '游戏与娱乐', (
         'game', 'puzzle', 'word game', 'arcade', 'trivia', 'rpg', 'sudoku',

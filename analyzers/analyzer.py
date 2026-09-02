@@ -40,6 +40,11 @@ MOMENTUM_THRESHOLD = 1.5
 MOMENTUM_MIN_COUNT = 3
 # 高热度新品的百分位门槛
 HOT_NEW_PERCENTILE = 85
+# 单品热度飙升的判定：既要有绝对增量，也要有相对涨幅
+# 绝对值排除"1 票涨到 3 票"这类噪声，相对值让 HN 几十票的涨幅
+# 不被 GitHub 上万星的基数淹没
+SURGE_MIN_DELTA = 10
+SURGE_MIN_GROWTH = 0.2
 
 
 @dataclass
@@ -72,19 +77,28 @@ class ProductAnalyzer:
         self.keywords = config.get('keywords', [])
         self.top_limit = config.get('top_products_limit', 20)
 
-    def analyze(self, products: List[Dict], history: Optional[List[Dict]] = None) -> AnalysisResult:
+    def analyze(
+        self,
+        products: List[Dict],
+        history: Optional[List[Dict]] = None,
+        product_stats: Optional[Dict[str, Dict]] = None,
+    ) -> AnalysisResult:
         """分析产品数据
 
-        history 为趋势窗口内的历史产品记录，用于识别新品与赛道动量。
+        history 为趋势窗口内打平的历史产品记录，用于识别新品与赛道动量。
+        product_stats 为每个产品上一次的票数与在榜情况，用于计算单品热度动量。
         """
         if not products:
             return self._empty_result()
 
         history = history or []
+        product_stats = product_stats or {}
         known_ids = {p.get('id') for p in history if p.get('id')}
 
-        # 先做逐产品加工：赛道归属、平台内归一化热度、是否新品
-        enriched = self._enrich(products, known_ids, has_history=bool(history))
+        # 先做逐产品加工：赛道归属、平台内归一化热度、是否新品、单品动量
+        enriched = self._enrich(
+            products, known_ids, has_history=bool(history), product_stats=product_stats
+        )
         platform_meta = self._build_platform_meta(enriched)
 
         platforms = self._count_platforms(enriched)
@@ -121,8 +135,14 @@ class ProductAnalyzer:
 
     # ------------------------------------------------------------- 逐产品加工
 
-    def _enrich(self, products: List[Dict], known_ids: set, has_history: bool) -> List[Dict]:
-        """为每个产品补充赛道、归一化热度与新品标记"""
+    def _enrich(
+        self,
+        products: List[Dict],
+        known_ids: set,
+        has_history: bool,
+        product_stats: Dict[str, Dict],
+    ) -> List[Dict]:
+        """为每个产品补充赛道、归一化热度、新品标记与单品动量"""
         enriched = []
         for product in products:
             item = dict(product)
@@ -136,7 +156,34 @@ class ProductAnalyzer:
             enriched.append(item)
 
         self._assign_heat(enriched)
+        self._assign_momentum(enriched, product_stats)
         return enriched
+
+    @staticmethod
+    def _assign_momentum(products: List[Dict], product_stats: Dict[str, Dict]) -> None:
+        """计算单个产品相对上次出现时的票数变化
+
+        只对有真实票数的平台计算。Product Hunt feed 与 BetaList 的"热度"来自列表
+        顺序，位次波动不代表热度变化，给它们编造动量会误导判断。
+        """
+        for product in products:
+            product['votes_delta'] = None
+            product['appearances'] = 0
+            product['first_seen'] = ''
+
+            stats = product_stats.get(product.get('id'))
+            if not stats:
+                continue
+
+            product['appearances'] = stats.get('appearances', 0)
+            product['first_seen'] = stats.get('first_seen', '')
+
+            if not product.get('has_real_heat'):
+                continue
+            prev = stats.get('prev_votes')
+            if prev is None:
+                continue
+            product['votes_delta'] = (product.get('votes') or 0) - prev
 
     @staticmethod
     def _assign_heat(products: List[Dict]) -> None:
@@ -218,6 +265,9 @@ class ProductAnalyzer:
             'theme_label': theme_label(product.get('theme', '')),
             'author': product.get('author', ''),
             'is_new': bool(product.get('is_new')),
+            'votes_delta': product.get('votes_delta'),
+            'appearances': product.get('appearances', 0),
+            'first_seen': product.get('first_seen', ''),
             'also_on': (product.get('metadata') or {}).get('also_on') or [],
         }
 
@@ -278,6 +328,7 @@ class ProductAnalyzer:
             signals.extend(self._momentum_signals(themes))
 
         signals.extend(self._cross_platform_signal(products))
+        signals.extend(self._surge_signal(products))
 
         if has_history:
             signals.extend(self._hot_new_signal(products))
@@ -380,6 +431,45 @@ class ProductAnalyzer:
             'metric': f"{len(multi)} 个",
             'theme': None,
             'evidence': [self._summarize(p) for p in multi[:3]],
+        }]
+
+    def _surge_signal(self, products: List[Dict]) -> List[Dict]:
+        """相比上次采集正在加速上涨的产品
+
+        按相对涨幅排序：GitHub 一万星涨 500 不如 HN 20 票涨到 80 有信息量。
+        """
+        surging = []
+        for product in products:
+            delta = product.get('votes_delta')
+            if delta is None or delta < SURGE_MIN_DELTA:
+                continue
+            base = max((product.get('votes') or 0) - delta, 1)
+            growth = delta / base
+            if growth < SURGE_MIN_GROWTH:
+                continue
+            surging.append((growth, product))
+
+        if not surging:
+            return []
+
+        surging.sort(key=lambda item: item[0], reverse=True)
+        evidence = []
+        for growth, product in surging[:3]:
+            summary = self._summarize(product)
+            summary['note'] = f"+{product['votes_delta']:,}（{growth:.0%}）"
+            evidence.append(summary)
+
+        return [{
+            'kind': 'surge',
+            'direction': 'up',
+            'title': f"{len(surging)} 个产品热度加速上涨",
+            'detail': (
+                f"相比上一次采集，这些产品的票数/星数至少增加 {SURGE_MIN_DELTA} "
+                f"且涨幅超过 {SURGE_MIN_GROWTH:.0%}，说明关注度仍在累积而非一次性曝光。"
+            ),
+            'metric': f"{len(surging)} 个",
+            'theme': None,
+            'evidence': evidence,
         }]
 
     def _hot_new_signal(self, products: List[Dict]) -> List[Dict]:

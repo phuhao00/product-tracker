@@ -187,6 +187,11 @@ tbody tr.item { cursor: pointer; }
 .c-name a:hover { color: var(--accent); text-decoration: underline; }
 .c-desc { color: var(--muted); font-size: 12px; margin-top: 2px; display: -webkit-box; -webkit-line-clamp: 1; -webkit-box-orient: vertical; overflow: hidden; }
 tr.open .c-desc { -webkit-line-clamp: unset; }
+.c-meta { display: none; }
+tr.open .c-meta:not(:empty) {
+  display: block; margin-top: 5px; font-size: 11.5px; color: var(--muted);
+  border-left: 2px solid var(--border); padding-left: 8px;
+}
 .badge {
   display: inline-block; font-size: 10.5px; font-weight: 700; padding: 1px 6px;
   border-radius: 4px; margin-left: 6px; vertical-align: 1px; white-space: nowrap;
@@ -202,6 +207,10 @@ tr.open .c-desc { -webkit-line-clamp: unset; }
 .heat-val { font-size: 12px; font-variant-numeric: tabular-nums; width: 24px; text-align: right; color: var(--muted); }
 .c-raw { font-size: 12px; font-variant-numeric: tabular-nums; text-align: right; white-space: nowrap; width: 92px; }
 .c-raw small { color: var(--muted); }
+.c-delta { font-size: 12px; font-variant-numeric: tabular-nums; text-align: right; white-space: nowrap; width: 84px; }
+.delta { font-weight: 700; }
+.delta.up { color: var(--up); }
+.delta.down { color: var(--down); }
 .dash { color: #c2c8ce; }
 .empty-state { padding: 44px 20px; text-align: center; color: var(--muted); font-size: 13px; }
 
@@ -221,7 +230,8 @@ footer { margin-top: 44px; padding-top: 18px; border-top: 1px solid var(--border
   .kpis { width: 100%; justify-content: space-between; gap: 10px; margin-left: 0; }
   .theme-row { grid-template-columns: 104px 48px 1fr 70px; }
   .theme-new { display: none; }
-  .c-theme, .c-raw { display: none; }
+  .c-theme, .c-raw, .c-delta,
+  .h-theme, .h-votes, .h-votes_delta { display: none; }
   thead th { top: 0; position: static; }
 }
 """
@@ -245,6 +255,7 @@ const QUICK_FILTERS = {
   new: p => p.is_new,
   multi: p => p.also_on && p.also_on.length,
   heat: p => p.has_real_heat && p.heat >= 80,
+  surge: p => p.votes_delta > 0,
 };
 
 function match(p) {
@@ -268,6 +279,14 @@ function compare(a, b) {
   else if (k === 'platform') r = COLLATOR.compare(a.platform_label, b.platform_label);
   else if (k === 'theme') r = COLLATOR.compare(a.theme_label, b.theme_label);
   else if (k === 'votes') r = (a.votes - b.votes) || (a.heat - b.heat);
+  // 无动量数据的产品始终排在最后，不与"零增长"混为一谈
+  else if (k === 'votes_delta') {
+    const av = a.votes_delta, bv = b.votes_delta;
+    if (av == null && bv == null) r = 0;
+    else if (av == null) return 1;
+    else if (bv == null) return -1;
+    else r = av - bv;
+  }
   else r = (a.heat - b.heat) || (a.votes - b.votes);
   // 排序键相同时用名称保证顺序稳定
   return (r || COLLATOR.compare(a.name, b.name)) * state.dir;
@@ -286,13 +305,39 @@ function rowHTML(p, i) {
     '<td class="c-idx">' + (i + 1) + '</td>' +
     '<td class="c-name"><a href="' + esc(p.url) + '" target="_blank" rel="noopener">' +
       esc(p.name) + '</a>' + badges +
-      '<div class="c-desc">' + esc(p.description) + '</div></td>' +
+      '<div class="c-desc">' + esc(p.description) + '</div>' +
+      '<div class="c-meta">' + trackHTML(p) + '</div></td>' +
     '<td class="c-plat">' + esc(p.platform_label) + '</td>' +
     '<td class="c-theme">' + esc(p.theme_label) + '</td>' +
     '<td class="c-heat"><div class="heat-inner"><div class="heat-track">' +
       '<div class="heat-fill' + weak + '" style="width:' + p.heat + '%"></div></div>' +
       '<span class="heat-val">' + p.heat + '</span></div></td>' +
-    '<td class="c-raw">' + raw + '</td></tr>';
+    '<td class="c-raw">' + raw + '</td>' +
+    '<td class="c-delta">' + deltaHTML(p) + '</td></tr>';
+}
+
+function deltaHTML(p) {
+  if (p.votes_delta === null || p.votes_delta === undefined) {
+    return '<span class="dash">—</span>';
+  }
+  if (p.votes_delta === 0) return '<span class="dash">0</span>';
+  const up = p.votes_delta > 0;
+  return '<span class="delta ' + (up ? 'up' : 'down') + '">' +
+    (up ? '↑' : '↓') + fmt(Math.abs(p.votes_delta)) + '</span>';
+}
+
+// 展开行里补充"在榜多久"，判断是持续受关注还是一次性曝光
+function trackHTML(p) {
+  const bits = [];
+  if (p.appearances >= 1) {
+    bits.push('此前已出现 ' + p.appearances + ' 次');
+    if (p.first_seen) bits.push('最早见于 ' + esc(p.first_seen.slice(5, 10)));
+  } else if (p.is_new) {
+    bits.push('本次首次出现');
+  }
+  if (p.also_on && p.also_on.length) bits.push('同时出现在 ' + p.also_on.length + ' 个其他平台');
+  if (!p.has_real_heat) bits.push('该平台无公开票数，热度分按榜单位次估算');
+  return bits.join(' · ');
 }
 
 function render() {
@@ -301,7 +346,7 @@ function render() {
 
   tbody.innerHTML = rows.length
     ? rows.map(rowHTML).join('')
-    : '<tr><td colspan="6" class="empty-state">没有匹配的产品。' +
+    : '<tr><td colspan="7" class="empty-state">没有匹配的产品。' +
       '<button class="reset" data-act="reset">清除筛选</button></td></tr>';
 
   $('#count').innerHTML = '<b>' + rows.length + '</b> / ' + DATA.length + ' 个产品';
@@ -488,6 +533,10 @@ class ReportGenerator:
         else:
             items.append(('首次', '无历史对比', False))
 
+        rising = sum(1 for p in result.products if (p.get('votes_delta') or 0) > 0)
+        if rising:
+            items.append((str(rising), '热度上涨', True))
+
         return ''.join(
             f'<div class="kpi{" hl" if hl else ""}"><b>{escape(value)}</b>'
             f'<small>{escape(label)}</small></div>'
@@ -512,7 +561,7 @@ class ReportGenerator:
                 '<li>'
                 f'<a href="{escape(item.get("url") or "#", quote=True)}" target="_blank" rel="noopener">'
                 f'{escape(item.get("name", ""))}</a>'
-                f'<em>{escape(item.get("platform_label") or platform_label(item.get("platform", "")))}</em>'
+                f'<em>{escape(item.get("note") or item.get("platform_label") or platform_label(item.get("platform", "")))}</em>'
                 '</li>'
                 for item in (signal.get('evidence') or [])[:3]
             )
@@ -599,6 +648,12 @@ class ReportGenerator:
                 f'<span class="theme-count">{multi_count}</span></button>'
             )
         quick_chips += '<button class="chip accent" data-quick="heat">高热度</button>'
+        surge_count = sum(1 for p in result.products if (p.get('votes_delta') or 0) > 0)
+        if surge_count:
+            quick_chips += (
+                f'<button class="chip accent" data-quick="surge">上涨中 '
+                f'<span class="theme-count">{surge_count}</span></button>'
+            )
 
         headers = [
             ('', '', False),
@@ -607,19 +662,21 @@ class ReportGenerator:
             ('赛道', 'theme', True),
             ('热度分', 'heat', True),
             ('原始值', 'votes', True),
+            ('较上次', 'votes_delta', True),
         ]
         head_html = ''
         for label, key, sortable in headers:
             if not sortable:
                 head_html += f'<th>{escape(label)}</th>'
             else:
+                # h-* 类名与 tbody 的 c-* 对应，窄屏隐藏列时表头一起隐藏，避免错位
                 head_html += (
-                    f'<th class="sortable" data-sort="{key}">{escape(label)}'
+                    f'<th class="sortable h-{key}" data-sort="{key}">{escape(label)}'
                     '<span class="arrow">↕</span></th>'
                 )
 
         return f"""<section id="explorer">
-<div class="sec-head"><h2>产品明细</h2><p>热度分为平台内百分位（0-100），跨平台可比；原始值为各平台自己的口径</p></div>
+<div class="sec-head"><h2>产品明细</h2><p>热度分为平台内百分位（0-100），跨平台可比；原始值为各平台自己的口径；较上次为相对上一次采集的票数变化</p></div>
 <div class="toolbar">
   <div class="search">
     <span class="icon">⌕</span>
@@ -732,7 +789,10 @@ class ReportGenerator:
                     lines.append('')
                     for item in evidence[:3]:
                         label = item.get('platform_label') or platform_label(item.get('platform', ''))
-                        lines.append(f"- [{item.get('name', '')}]({item.get('url') or '#'}) — {label}")
+                        note = f" · {item['note']}" if item.get('note') else ''
+                        lines.append(
+                            f"- [{item.get('name', '')}]({item.get('url') or '#'}) — {label}{note}"
+                        )
                 lines.append('')
         else:
             lines += ['_暂无足够数据生成结论_', '']
