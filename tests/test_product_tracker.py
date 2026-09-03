@@ -485,12 +485,36 @@ def test_analyze_empty_input_returns_warning(analyzer):
     ('Vaultly', 'Zero-knowledge encryption for your passwords', 'security'),
     # "from scratch" 描述的是形式而非领域，不该盖过 LLM 这样的领域词
     ('minimind', 'Train a 64M-parameter LLM from scratch in just 2h', 'llm'),
+    # 合写 / 标题里的 AI / 后缀 DB 以前会漏进「其他」
+    ('Open-sourced runtime for Claude subagent', 'better Codex experience', 'ai_agent'),
+    ('Basedash AI Sources', 'Trust every AI answer by seeing what built it', 'ai_agent'),
+    ('HydraDB OSS', 'Now open source: the fastest graph DB', 'infra'),
+    ('Claude Fable 5.1', "Claude's most advanced models for coding and knowledge work", 'llm'),
 ])
 def test_classify_assigns_expected_theme(name, description, expected):
     primary, matched = classify(name, description)
 
     assert primary == expected
     assert expected in matched
+
+
+def test_bare_ai_in_long_hn_title_does_not_force_ai_agent():
+    """HN 把整段标题塞进 name，句中的 AI 不该抢走更具体的赛道"""
+    primary, _ = classify(
+        'Weedout – Safari extension that hides YouTube AI-labeled videos',
+        "I'm the developer. I built this because AI-generated spam.",
+    )
+    assert primary == 'devtools'
+
+
+def test_bare_ai_in_short_product_name_still_counts():
+    primary, _ = classify('Basedash AI Sources', 'Trust every AI answer')
+    assert primary == 'ai_agent'
+
+
+def test_camel_case_product_names_split_for_keywords():
+    assert contains_keyword(normalize_text('HydraDB'), 'db')
+    assert contains_keyword(normalize_text('ShowHN'), 'hn')
 
 
 def test_classify_falls_back_to_other():
@@ -661,9 +685,87 @@ def test_signals_highlight_cross_platform_products(analyzer):
 def test_signals_fall_back_to_leader_on_first_run(analyzer, mixed_scale_products):
     result = analyzer.analyze(mixed_scale_products)
 
-    assert result.signals
-    assert result.signals[0]['kind'] == 'leader'
-    assert '历史数据' in result.signals[0]['detail']
+    kinds = [s['kind'] for s in result.signals]
+    assert 'watchlist' in kinds
+    leader = next(s for s in result.signals if s['kind'] == 'leader')
+    assert '历史数据' in leader['detail']
+
+
+def test_watchlist_signal_leads_with_actionable_products(analyzer, mixed_scale_products):
+    result = analyzer.analyze(mixed_scale_products)
+
+    assert result.signals[0]['kind'] == 'watchlist'
+    assert len(result.signals[0]['evidence']) <= 5
+
+
+def test_hot_new_includes_position_based_platforms(analyzer):
+    """PH/BetaList 没有真实票数，但仍应报告冲进榜单前列的新品"""
+    history = [{'id': 'old', 'name': 'Old', 'description': 'x', 'platform': 'producthunt'}]
+    current = [
+        {'id': f'ph_{i}', 'name': f'New {i}', 'description': 'a saas tool',
+         'url': 'https://x', 'platform': 'producthunt', 'votes': 0, 'comments': 0,
+         'category': '', 'tags': []}
+        for i in range(10)
+    ]
+
+    result = analyzer.analyze(current, history=history)
+    hot_new = next((s for s in result.signals if s['kind'] == 'hot_new'), None)
+
+    assert hot_new is not None
+    assert '无公开票数' in hot_new['detail'] or '榜单位次' in hot_new['detail']
+
+
+def test_theme_momentum_uses_deduped_history_not_raw_repeats(analyzer):
+    """同一产品在窗口内出现多次时，环比应按去重后的集合计算"""
+    # 同一个生产力产品重复 8 次，若不去重会把历史占比抬到接近 100%
+    history = [
+        {'id': 'same', 'name': 'Notes', 'description': 'a productivity notes app',
+         'platform': 'hackernews', 'votes': 1, 'tags': []}
+        for _ in range(8)
+    ] + [
+        {'id': f'h{i}', 'name': f'agent-{i}', 'description': 'an ai agent toolkit',
+         'platform': 'hackernews', 'votes': 1, 'tags': []}
+        for i in range(7)
+    ]
+    current = [
+        {'id': f'c{i}', 'name': f'agent-{i}', 'description': 'an ai agent toolkit',
+         'url': 'https://x', 'platform': 'hackernews', 'votes': 5, 'comments': 0,
+         'category': '', 'tags': []}
+        for i in range(8)
+    ]
+
+    result = analyzer.analyze(current, history=history)
+    themes = {t['key']: t for t in result.themes}
+
+    # 去重后历史 8 个产品里 7 个是 agent → previous_share ≈ 87.5%，而不是被 8 次复采稀释
+    assert themes['ai_agent']['previous_share'] == 87.5
+
+
+def test_cooling_theme_with_tiny_sample_does_not_signal(analyzer):
+    """单个产品的赛道降温没有统计意义，不该占结论卡"""
+    history = [
+        {'id': f'h{i}', 'name': f'seo-{i}', 'description': 'seo marketing growth ads',
+         'platform': 'hackernews', 'votes': 1, 'tags': []}
+        for i in range(10)
+    ]
+    current = [
+        {'id': 'only', 'name': 'Lonely SEO', 'description': 'seo marketing growth ads',
+         'url': 'https://x', 'platform': 'hackernews', 'votes': 5, 'comments': 0,
+         'category': '', 'tags': []},
+    ] + [
+        {'id': f'c{i}', 'name': f'agent-{i}', 'description': 'an ai agent toolkit',
+         'url': 'https://x', 'platform': 'hackernews', 'votes': 5, 'comments': 0,
+         'category': '', 'tags': []}
+        for i in range(9)
+    ]
+
+    result = analyzer.analyze(current, history=history)
+    cooling = [
+        s for s in result.signals
+        if s['kind'] == 'momentum' and s.get('theme') == 'growth'
+    ]
+
+    assert cooling == []
 
 
 def test_signals_do_not_repeat_the_same_theme(analyzer):

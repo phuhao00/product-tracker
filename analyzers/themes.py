@@ -22,19 +22,27 @@ OTHER_THEME = ('other', '其他')
 # 命中位置的权重：标题是产品的自我定位，最可信
 ZONE_WEIGHTS = (('name', 3), ('tags', 2), ('description', 1))
 
+# 过于泛化的词只在标题/标签计分，避免正文随口提一下就抢走主赛道
+# （例如会议笔记里写 "AI meeting notes" 不该压过 productivity）
+NAME_TAG_ONLY_TERMS = frozenset({'ai', 'assistant'})
+
 # (key, 展示名, 关键词)
 THEME_DEFINITIONS: List[Tuple[str, str, Tuple[str, ...]]] = [
     ('ai_agent', 'AI 智能体', (
-        'agent', 'agentic', 'multi agent', 'sub agent', 'autonomous', 'copilot',
-        'mcp', 'claude code', 'agent skill', 'ai assistant', 'ai advisory',
-        'ai teleprompter', 'chatbot',
+        'agent', 'agentic', 'multi agent', 'sub agent', 'subagent',
+        'autonomous', 'copilot', 'mcp', 'claude code', 'agent skill',
+        'ai assistant', 'ai advisory', 'ai teleprompter', 'chatbot',
+        # 标题里带 AI / assistant 是明确的自我定位；正文单独出现不算
+        'ai', 'assistant', 'auto reply', 'auto replier', 'ai that',
+        'ai chat', 'ai auto', 'with ai',
     )),
     # 不收录 claude / openai 这类厂商名：它们标示生态而非领域，
     # "claude-mem"（给智能体做记忆）会被误判成模型类产品。
     ('llm', 'LLM 与模型', (
         'llm', 'gpt', 'rag', 'embedding', 'vector search', 'fine tune',
         'prompt', 'inference', 'language model', 'foundation model',
-        'ai model', 'diffusion', 'quantization',
+        'ai model', 'diffusion', 'quantization', 'models for',
+        'on device llm', 'local llm', 'model eval',
     )),
     ('oss_alt', '开源替代品', (
         'alternative', 'alternative to', 'open source alternative',
@@ -55,17 +63,19 @@ THEME_DEFINITIONS: List[Tuple[str, str, Tuple[str, ...]]] = [
         'sql', 'cache', 'proxy', 'devops', 'ci cd', 'monitoring',
         'observability', 'container', 'load balancer', 'infrastructure',
         'linux', 'server', 'ssh', 'distro', 'uptime', 'gpu compute',
-        'proxies', 'self host',
+        'proxies', 'self host', 'graph db', 'graph database', 'db',
+        'virtualization', 'virtualisation', 'kafka',
     )),
     ('data', '数据与分析', (
         'analytics', 'dashboard', 'etl', 'data pipeline', 'visualization',
         'spreadsheet', 'excel', 'chart', 'metrics', 'data warehouse',
         'scraper', 'crawler', 'dataset', 'search engine', 'benchmark',
+        'screener',
     )),
     ('security', '安全与隐私', (
         'security', 'privacy', 'encryption', 'zero knowledge', 'vpn',
         'password', 'vulnerability', 'compliance', 'firewall', 'redacted',
-        'censorship', 'authentication', 'malware', 'phishing',
+        'censorship', 'authentication', 'malware', 'phishing', 'deepfake',
     )),
     ('fintech', '金融与支付', (
         'payment', 'invoice', 'billing', 'fintech', 'crypto', 'wallet',
@@ -76,7 +86,8 @@ THEME_DEFINITIONS: List[Tuple[str, str, Tuple[str, ...]]] = [
         'seo', 'ads', 'marketing', 'growth', 'newsletter', 'email campaign',
         'social media', 'landing page', 'advertising', 'copywriting',
         'lead generation', 'sales', 'sales pipeline', 'brand', 'ad space',
-        'search bot', 'client approval', 'waitlist',
+        'search bot', 'client approval', 'waitlist', 'social listening',
+        'followers', 'digital product', 'rsvp', 'no show',
     )),
     ('career', '招聘与职业', (
         'job', 'resume', 'hiring', 'recruit', 'career', 'interview', 'ats',
@@ -103,17 +114,18 @@ THEME_DEFINITIONS: List[Tuple[str, str, Tuple[str, ...]]] = [
         'illustration', 'render', '3d', 'audio', 'music', 'synth', 'sampler',
         'drum machine', 'microphone', 'mic', 'video editor', 'photo editor',
         'screen recording', 'teleprompter', 'screenshot', 'wallpaper', 'voice',
+        'dictation', 'transcription', 'ai visual',
     )),
     ('productivity', '生产力与协作', (
         'productivity', 'notes', 'note taking', 'docs', 'calendar', 'task',
         'todo', 'project management', 'workflow', 'automation', 'crm',
         'meeting', 'knowledge base', 'collaboration', 'planner', 'scheduling',
-        'time tracking', 'shift', 'checklist', 'reminder',
+        'time tracking', 'shift', 'checklist', 'reminder', 'screen time',
     )),
     ('hardware', '硬件与设备', (
         'gimbal', 'robot', 'iot', 'sensor', 'camera', '3d print', 'slicer',
         'macbook', 'notch', 'e ink', 'hardware', 'firmware', 'raspberry pi',
-        'wearable', 'drone',
+        'wearable', 'drone', 'dynamic island',
     )),
     ('legal', '法务与合规', (
         'patent', 'legal', 'contract', 'trademark', 'copyright', 'regulation',
@@ -123,7 +135,7 @@ THEME_DEFINITIONS: List[Tuple[str, str, Tuple[str, ...]]] = [
         'health', 'fitness', 'sleep', 'food', 'recipe', 'travel', 'habit',
         'meditation', 'workout', 'nutrition', 'wardrobe', 'hobby', 'family',
         'air quality', 'pollution', 'exercise', 'athlete', 'dating',
-        'mental health', 'parenting',
+        'mental health', 'parenting', 'walk', 'adventure',
     )),
 ]
 
@@ -158,6 +170,12 @@ def score_themes(name: str, description: str = '', tags: List[str] = None) -> Di
         for term in terms:
             specificity = 2 if ' ' in term else 1
             for zone, weight in ZONE_WEIGHTS:
+                # 泛化词不看正文，避免随口一提抢走主赛道
+                if term in NAME_TAG_ONLY_TERMS and zone == 'description':
+                    continue
+                # HN 标题常被整段塞进 name：一长句里的 AI 不是自我定位
+                if term == 'ai' and zone == 'name' and len(zones['name'].split()) > 8:
+                    continue
                 if zones[zone] and contains_keyword(zones[zone], term):
                     score += weight * specificity
         if score:

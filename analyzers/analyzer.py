@@ -274,20 +274,24 @@ class ProductAnalyzer:
     # ----------------------------------------------------------------- 赛道
 
     def _aggregate_themes(self, products: List[Dict], history: List[Dict]) -> List[Dict]:
-        """按赛道聚合，并与历史窗口对比得出动量"""
+        """按赛道聚合，并与历史窗口对比得出动量
+
+        历史窗口里同一产品会重复出现多次（每次采集一份）。按 id 去重后再算占比，
+        否则复采会把历史分母冲大，环比失去意义。
+        """
         total = len(products)
         current = defaultdict(list)
         for product in products:
             current[product['theme']].append(product)
 
         previous_counts = Counter()
-        for product in history:
+        for product in self._dedupe_history(history):
             primary, _ = classify(
                 product.get('name', ''), product.get('description', ''),
                 product.get('tags') or []
             )
             previous_counts[primary] += 1
-        previous_total = len(history)
+        previous_total = sum(previous_counts.values())
 
         themes = []
         for key, items in current.items():
@@ -298,7 +302,16 @@ class ProductAnalyzer:
             )
             delta = round(share - previous_share, 1) if previous_share is not None else None
 
-            ranked = sorted(items, key=lambda p: p.get('heat', 0), reverse=True)
+            # 证据优先展示有真实票数的产品，避免榜单位次冒充"赛道升温证明"
+            ranked = sorted(
+                items,
+                key=lambda p: (
+                    1 if p.get('has_real_heat') else 0,
+                    p.get('heat', 0),
+                    p.get('votes') or 0,
+                ),
+                reverse=True,
+            )
             themes.append({
                 'key': key,
                 'label': theme_label(key),
@@ -315,6 +328,19 @@ class ProductAnalyzer:
         themes.sort(key=lambda t: t['count'], reverse=True)
         return themes
 
+    @staticmethod
+    def _dedupe_history(history: List[Dict]) -> List[Dict]:
+        """窗口内同一产品只保留最后一次出现，供赛道占比对比使用"""
+        latest: Dict[str, Dict] = {}
+        orphans: List[Dict] = []
+        for product in history:
+            product_id = product.get('id')
+            if product_id:
+                latest[product_id] = product
+            else:
+                orphans.append(product)
+        return list(latest.values()) + orphans
+
     # ----------------------------------------------------------------- 信号
 
     def _build_signals(
@@ -323,6 +349,9 @@ class ProductAnalyzer:
         """生成决策信号：回答"发生了什么变化、我该看什么" """
         has_history = history.get('available')
         signals: List[Dict] = []
+
+        # 今日关注置顶：把热度、新品、动量、跨平台压成一张可行动的短名单
+        signals.extend(self._watchlist_signal(products))
 
         if has_history:
             signals.extend(self._momentum_signals(themes))
@@ -390,7 +419,7 @@ class ProductAnalyzer:
             if t['key'] != OTHER_THEME[0]
             and t['delta'] is not None
             and abs(t['delta']) >= MOMENTUM_THRESHOLD
-            and (t['count'] >= MOMENTUM_MIN_COUNT or t['delta'] < 0)
+            and t['count'] >= MOMENTUM_MIN_COUNT
         ]
         movers.sort(key=lambda t: abs(t['delta']), reverse=True)
 
@@ -472,24 +501,102 @@ class ProductAnalyzer:
             'evidence': evidence,
         }]
 
+    def _watchlist_signal(self, products: List[Dict]) -> List[Dict]:
+        """今日关注短名单：把分散信号压成 5 个现在就该点开的产品
+
+        综合热度百分位、是否新品、是否跨平台、是否仍在上涨。
+        无真实票数的平台略降权，但不排除——否则 PH/BetaList 前列新品永远进不来。
+        """
+        if len(products) < 3:
+            return []
+
+        scored = []
+        for product in products:
+            score = float(product.get('heat', 0))
+            reasons = []
+            if product.get('is_new'):
+                score += 15
+                reasons.append('新品')
+            also_on = (product.get('metadata') or {}).get('also_on') or []
+            if also_on:
+                score += 20
+                reasons.append('跨平台')
+            delta = product.get('votes_delta')
+            if delta is not None and delta > 0:
+                score += min(25.0, 8 + delta / 40)
+                reasons.append(f'+{delta:,}')
+            if product.get('has_real_heat'):
+                score += 5
+            else:
+                score *= 0.9
+                if product.get('heat', 0) >= HOT_NEW_PERCENTILE:
+                    reasons.append('榜单前列')
+            if product.get('heat', 0) >= 90 and '热度高' not in reasons:
+                reasons.append('热度高')
+            scored.append((score, reasons, product))
+
+        scored.sort(key=lambda item: item[0], reverse=True)
+        top = scored[:5]
+        if not top or top[0][0] < 50:
+            return []
+
+        evidence = []
+        for score, reasons, product in top:
+            summary = self._summarize(product)
+            summary['note'] = ' · '.join(reasons[:2]) or product.get('platform_label', '')
+            evidence.append(summary)
+
+        return [{
+            'kind': 'watchlist',
+            'direction': 'up',
+            'title': '今日关注',
+            'detail': (
+                '综合热度、新品、跨平台与上涨动量挑出的短名单，'
+                '优先点开这些再决定是否深挖整张表。'
+            ),
+            'metric': f"{len(evidence)} 个",
+            'theme': None,
+            'evidence': evidence,
+        }]
+
     def _hot_new_signal(self, products: List[Dict]) -> List[Dict]:
-        """新品且在所属平台内热度靠前"""
+        """新品且在所属平台内热度靠前
+
+        不强制要求真实票数：PH/BetaList 只有榜单位次，但榜单前列的新品
+        仍是"每天看新产品"场景里最该看的信号。
+        """
         hot_new = [
             p for p in products
-            if p.get('is_new') and p.get('has_real_heat') and p.get('heat', 0) >= HOT_NEW_PERCENTILE
+            if p.get('is_new') and p.get('heat', 0) >= HOT_NEW_PERCENTILE
         ]
         if not hot_new:
             return []
 
-        hot_new.sort(key=lambda p: p.get('heat', 0), reverse=True)
+        hot_new.sort(
+            key=lambda p: (
+                1 if p.get('has_real_heat') else 0,
+                p.get('heat', 0),
+            ),
+            reverse=True,
+        )
+        real = sum(1 for p in hot_new if p.get('has_real_heat'))
+        detail = (
+            f"这些产品是本次首次出现，且在所属平台内热度百分位达到 "
+            f"{HOT_NEW_PERCENTILE} 以上。"
+        )
+        if real and real < len(hot_new):
+            detail += (
+                f"其中 {real} 个有真实票数，其余来自按榜单位次估算热度的平台，"
+                "请交叉验证。"
+            )
+        elif not real:
+            detail += "当前命中的都来自无公开票数的平台，热度按榜单位次估算。"
+
         return [{
             'kind': 'hot_new',
             'direction': 'up',
             'title': f"{len(hot_new)} 个新品直接冲进平台前列",
-            'detail': (
-                f"这些产品是本次首次出现，且在所属平台内热度百分位达到 "
-                f"{HOT_NEW_PERCENTILE} 以上，属于突然起量的候选。"
-            ),
+            'detail': detail,
             'metric': f"{len(hot_new)} 个",
             'theme': None,
             'evidence': [self._summarize(p) for p in hot_new[:3]],

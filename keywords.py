@@ -16,10 +16,17 @@ WHITESPACE_RE = re.compile(r'\s+')
 
 
 def normalize_text(text: str) -> str:
-    """归一化待匹配文本：小写、分隔符转空格、折叠空白"""
+    """归一化待匹配文本：小写、分隔符转空格、折叠空白
+
+    顺带拆开 camelCase / 字母数字边界（HydraDB → hydra db，GPT4 → gpt 4），
+    否则后缀类关键词（db、llm）永远匹配不到粘写的产品名。
+    """
     if not text:
         return ''
-    lowered = SEPARATOR_RE.sub(' ', text.lower())
+    spaced = re.sub(r'([a-z])([A-Z])', r'\1 \2', text)
+    spaced = re.sub(r'([A-Za-z])([0-9])', r'\1 \2', spaced)
+    spaced = re.sub(r'([0-9])([A-Za-z])', r'\1 \2', spaced)
+    lowered = SEPARATOR_RE.sub(' ', spaced.lower())
     return f" {WHITESPACE_RE.sub(' ', lowered).strip()} "
 
 

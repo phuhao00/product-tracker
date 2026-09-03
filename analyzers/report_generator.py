@@ -577,7 +577,7 @@ class ReportGenerator:
             )
 
         return f"""<section id="signals">
-<div class="sec-head"><h2>本次结论</h2><p>按重要性排序，点击卡片可在下方明细中筛选对应赛道</p></div>
+<div class="sec-head"><h2>本次结论</h2><p>先看「今日关注」短名单，再看赛道变化；点击赛道类卡片可筛选下方明细</p></div>
 <div class="signals">{cards}</div>
 </section>"""
 
