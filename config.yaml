@@ -25,10 +25,12 @@ platforms:
     enabled: true
     name: "Product Hunt"
     base_url: "https://www.producthunt.com"
-    # 官方 Atom feed，比抓取页面稳定；注意 feed 不含票数
+    # 官方 Atom feed，比抓取页面稳定；票数通过官方 featured.svg 徽章补齐
     feed_url: "https://www.producthunt.com/feed"
-    # feed 不可用时的回退数据源
+    # feed 不可用时的回退数据源（无票数）
     alternative_source: "https://hunted.space"
+    enrich_votes: true       # 用 featured.svg 补票数，解锁热度分与「较上次」
+    vote_workers: 8          # 补票并发数
     rate_limit: 3
     timeout: 30
     max_retries: 3

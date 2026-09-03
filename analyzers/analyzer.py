@@ -183,7 +183,16 @@ class ProductAnalyzer:
             prev = stats.get('prev_votes')
             if prev is None:
                 continue
-            product['votes_delta'] = (product.get('votes') or 0) - prev
+            current_votes = product.get('votes') or 0
+            # Product Hunt 刚从「feed 无票」升级到徽章补票：历史 prev=0、本次突然有票，
+            # 这是数据口径切换而不是真实暴涨，跳过以免污染飙升信号。
+            if (
+                prev == 0
+                and current_votes > 0
+                and (product.get('metadata') or {}).get('votes_source') == 'producthunt-badge'
+            ):
+                continue
+            product['votes_delta'] = current_votes - prev
 
     @staticmethod
     def _assign_heat(products: List[Dict]) -> None:

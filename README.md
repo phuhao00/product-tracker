@@ -66,7 +66,7 @@ HTML 报告按 **结论 → 趋势 → 明细** 组织：
 |----|------|
 | **热度分** | 所属平台内百分位（0–100），跨平台排序用这个 |
 | **原始值** | 各平台自己的口径（票数 / 星数）；无公开数据时为 `—` |
-| **较上次** | 相对上一次采集的票数变化。仅 HN / GitHub 有值；PH / BetaList 为 `—`（位次≠热度） |
+| **较上次** | 相对上一次采集的票数变化。HN / GitHub / Product Hunt 有值；BetaList 为 `—`（无公开票数） |
 
 「热度加速上涨」按**相对涨幅**排序（增量 ≥ 10 且涨幅 > 20%），过滤小基数噪声。
 
@@ -76,7 +76,7 @@ HTML 报告按 **结论 → 趋势 → 明细** 组织：
 
 | 平台 | 数据源 | 热度指标 | 状态 |
 |------|--------|----------|------|
-| Product Hunt | 官方 Atom feed，回退 hunted.space | 无（feed 不含票数） | ✅ |
+| Product Hunt | 官方 Atom feed + embed 徽章补票数；回退 hunted.space | 得票数 | ✅ |
 | Hacker News | Algolia 搜索 API，回退 Firebase API | 得票数 / 评论数 | ✅ |
 | BetaList | 站点 HTML | 无 | ✅ |
 | GitHub Trending | 站点 HTML | 周期内新增星数 | ✅ |
@@ -177,7 +177,7 @@ python -m pytest tests -q
 | 需要代理 | 打开 `config.yaml` 的 `proxy` |
 | 日志位置 | `logs/tracker.log`（按大小滚动） |
 
-**已知限制**：Product Hunt feed 与 BetaList 不提供公开票数，因此这两家没有「较上次」动量；热度分按榜单位次估算（灰色条）。要获得 PH 真实票数需要官方 API token，当前未接入。
+**已知限制**：BetaList 不提供公开票数，因此没有「较上次」动量，热度分按榜单位次估算（灰色条）。Product Hunt 的 Atom feed 本身不含票数，本项目通过官方 `featured.svg` 徽章补齐；若徽章接口异常会自动跳过，退回按 feed 顺序估算。
 
 ## 许可
 

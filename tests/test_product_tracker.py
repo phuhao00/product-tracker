@@ -90,6 +90,40 @@ def test_producthunt_parses_atom_entry():
     assert product.url == 'https://www.producthunt.com/products/widget'
     assert product.author == 'Jane Doe'
     assert product.metadata['feed_rank'] == 1
+    assert product.metadata['post_id'] == '1222307'
+
+
+def test_producthunt_parses_votes_from_featured_badge():
+    svg = '''<?xml version="1.0"?>
+    <svg><text><tspan>FEATURED ON</tspan></text>
+    <text><tspan>Product Hunt</tspan></text>
+    <text><tspan x="9" y="27">384</tspan></text></svg>'''
+
+    assert ProductHuntCollector._parse_badge_votes(svg) == 384
+    assert ProductHuntCollector._parse_badge_votes('<svg></svg>') is None
+    assert ProductHuntCollector._parse_badge_votes('') is None
+
+
+def test_producthunt_enrich_votes_fills_products(monkeypatch):
+    collector = ProductHuntCollector({
+        'name': 'Product Hunt', 'enrich_votes': True, 'vote_workers': 2,
+    })
+    products = [
+        Product(id='ph_1', name='A', description='a', url='https://a',
+                platform='producthunt', metadata={'post_id': '1'}),
+        Product(id='ph_2', name='B', description='b', url='https://b',
+                platform='producthunt', metadata={'post_id': '2'}),
+    ]
+
+    def fake_fetch(post_id):
+        return {'1': 120, '2': 45}[post_id]
+
+    monkeypatch.setattr(collector, '_fetch_badge_votes', fake_fetch)
+    collector._enrich_votes(products)
+
+    assert products[0].votes == 120
+    assert products[1].votes == 45
+    assert products[0].metadata['votes_source'] == 'producthunt-badge'
 
 
 def test_producthunt_skips_discussion_paragraph():
@@ -875,6 +909,26 @@ def test_platforms_without_real_votes_get_no_fabricated_momentum(analyzer, retur
 
     assert row['votes_delta'] is None
     assert row['appearances'] == 3
+
+
+def test_producthunt_badge_baseline_does_not_look_like_a_surge(analyzer):
+    """历史票数为 0、本次靠徽章补上票数，不应记成 +N 暴涨"""
+    products = [
+        {
+            'id': 'ph_1', 'name': 'Launch', 'description': 'a saas tool',
+            'url': 'https://x', 'platform': 'producthunt', 'votes': 220,
+            'comments': 0, 'category': '', 'tags': [],
+            'metadata': {'votes_source': 'producthunt-badge'},
+        },
+    ]
+    result = analyzer.analyze(
+        products, history=[{'id': 'ph_1'}], product_stats=_stats(ph_1=0),
+    )
+    row = result.products[0]
+
+    assert row['has_real_heat'] is True
+    assert row['votes_delta'] is None
+    assert not any(s['kind'] == 'surge' for s in result.signals)
 
 
 def test_delta_is_none_for_first_time_products(analyzer, returning_products):

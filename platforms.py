@@ -17,7 +17,7 @@ PLATFORM_LABELS = {
 HEAT_BASIS = {
     'hackernews': '得票数',
     'github_trending': '周期内新增星数',
-    'producthunt': 'feed 排序',
+    'producthunt': '得票数（官方 embed 徽章）',
     'betalist': '列表顺序',
     'devhunt': '榜单排名',
 }

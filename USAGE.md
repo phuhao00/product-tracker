@@ -150,7 +150,8 @@ proxy:
 ### 关于「热度分」与「原始值」
 
 各平台热度量级差了三个数量级 —— GitHub Trending 上万星、Hacker News 几十票，
-Product Hunt feed 与 BetaList 干脆不提供公开票数。放同一张榜排序，结果只会是 GitHub 霸榜。
+Product Hunt 与 BetaList 的 Atom/HTML 源本身不含票数；本项目会用官方 embed 徽章
+为 Product Hunt 补票数。BetaList 仍无公开票数。放同一张榜直接比原始值，结果只会是 GitHub 霸榜。
 
 所以看板里有两列：
 
@@ -161,8 +162,8 @@ Product Hunt feed 与 BetaList 干脆不提供公开票数。放同一张榜排�
 没有真实热度数据的平台，热度分由列表顺序折算，热度条显示为**灰色**，提醒这只是弱信号。
 每个平台的具体口径写在报告附录的「热度口径说明」里。
 
-「较上次」只在提供真实票数的平台（Hacker News、GitHub Trending）上有值。Product Hunt feed
-与 BetaList 的热度来自榜单位次，位次波动不代表热度变化，所以显示 `—` 而不是编造数字；
+「较上次」在 Hacker News、GitHub Trending、Product Hunt（经徽章补齐）上有值。
+BetaList 仍无公开票数，热度按榜单位次估算（灰色条），「较上次」显示 `—`；
 首次出现的产品同样显示 `—`。按这一列排序时，无数据的行始终排在最后。
 
 热度分高只说明「现在热」，「较上次」才说明「还在涨」。两者结合看：热度分高但动量为 0 的多是
@@ -259,5 +260,5 @@ python main.py clean
 python -m pytest tests -q
 ```
 
-107 个离线测试，覆盖各平台解析、跨平台去重、关键词匹配、赛道分类、热度归一化、历史窗口、
+110 个离线测试，覆盖各平台解析、跨平台去重、关键词匹配、赛道分类、热度归一化、历史窗口、
 单品动量、决策信号、cron 与报告生成，不需要联网。

@@ -1,12 +1,17 @@
 """
 Product Hunt 数据收集器
-主数据源为官方 Atom feed，失败时回退到 hunted.space 页面解析
+
+主路径：官方 Atom feed（稳定，但不含票数）
+票数补齐：官方 embed SVG（featured.svg?post_id=）里带当前得票，无需 API token
+回退：hunted.space 榜单页（无票数）
 """
 
 import logging
 import re
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Dict, List, Optional
 
+import requests
 from bs4 import BeautifulSoup
 
 from .base import BaseCollector, Product
@@ -16,6 +21,11 @@ logger = logging.getLogger(__name__)
 ATOM_NS = {'atom': 'http://www.w3.org/2005/Atom'}
 # feed 中的 id 形如 tag:www.producthunt.com,2005:Post/1222307
 POST_ID_RE = re.compile(r'Post/(\d+)')
+# featured.svg 里唯一的纯数字文本节点就是当前得票
+BADGE_VOTE_RE = re.compile(r'>(\d{1,5})<')
+BADGE_URL = (
+    'https://api.producthunt.com/widgets/embed-image/v1/featured.svg?post_id={post_id}'
+)
 
 
 class ProductHuntCollector(BaseCollector):
@@ -25,6 +35,8 @@ class ProductHuntCollector(BaseCollector):
         super().__init__(config)
         self.feed_url = config.get('feed_url', 'https://www.producthunt.com/feed')
         self.fallback_url = config.get('alternative_source', 'https://hunted.space')
+        self.enrich_votes = config.get('enrich_votes', True)
+        self.vote_workers = max(1, int(config.get('vote_workers', 8)))
 
     def collect(self) -> List[Product]:
         products = self._collect_from_feed()
@@ -33,7 +45,10 @@ class ProductHuntCollector(BaseCollector):
             logger.warning("Product Hunt feed returned nothing, trying hunted.space fallback")
             products = self._collect_from_fallback()
 
-        return self._dedupe(products)[:self.max_items]
+        products = self._dedupe(products)[:self.max_items]
+        if products and self.enrich_votes:
+            self._enrich_votes(products)
+        return products
 
     def _collect_from_feed(self) -> List[Product]:
         root = self._make_xml_request(self.feed_url)
@@ -87,10 +102,88 @@ class ProductHuntCollector(BaseCollector):
             created_at=published,
             metadata={
                 'feed_rank': rank,
+                'post_id': post_id if match else '',
                 'source': 'producthunt.com/feed',
                 'slug': url.rstrip('/').split('/')[-1] if url else '',
             }
         )
+
+    def _enrich_votes(self, products: List[Product]) -> None:
+        """用官方 featured badge SVG 补齐票数
+
+        Product Hunt 站点与 GraphQL 都要 token / 反爬，但这枚公开 embed
+        徽章里带有当前得票，用 post_id 即可批量拉取。
+        """
+        targets = [
+            (product, (product.metadata or {}).get('post_id') or product.id.replace('ph_', '', 1))
+            for product in products
+            if (product.metadata or {}).get('post_id')
+            or (product.id.startswith('ph_') and product.id[3:].isdigit())
+        ]
+        if not targets:
+            return
+
+        filled = 0
+        with ThreadPoolExecutor(max_workers=min(self.vote_workers, len(targets))) as pool:
+            futures = {
+                pool.submit(self._fetch_badge_votes, post_id): product
+                for product, post_id in targets
+            }
+            for future in as_completed(futures):
+                product = futures[future]
+                try:
+                    votes = future.result()
+                except Exception as e:
+                    logger.debug(f"Vote enrich failed for {product.id}: {e}")
+                    continue
+                if votes is None:
+                    continue
+                product.votes = votes
+                product.metadata['votes_source'] = 'producthunt-badge'
+                filled += 1
+
+        logger.info(
+            f"Enriched Product Hunt votes for {filled}/{len(targets)} products "
+            f"via featured badge"
+        )
+
+    def _fetch_badge_votes(self, post_id: str) -> Optional[int]:
+        """拉取单枚 featured.svg 并解析票数
+
+        使用独立 requests.get，避免多线程共享 Session 的线程安全问题。
+        """
+        url = BADGE_URL.format(post_id=post_id)
+        headers = {
+            'User-Agent': self.session.headers.get('User-Agent', ''),
+            'Accept': 'image/svg+xml,text/xml,*/*',
+        }
+        try:
+            response = requests.get(
+                url,
+                headers=headers,
+                proxies=self.session.proxies or None,
+                timeout=self.timeout,
+            )
+        except Exception as e:
+            logger.debug(f"Badge request error {post_id}: {e}")
+            return None
+        if not response.ok:
+            return None
+        return self._parse_badge_votes(response.text)
+
+    @staticmethod
+    def _parse_badge_votes(svg: str) -> Optional[int]:
+        """从 featured.svg 中取出得票数
+
+        徽章里唯一的纯数字文本节点就是票数（三角形箭头旁边那一个）。
+        """
+        if not svg:
+            return None
+        matches = BADGE_VOTE_RE.findall(svg)
+        if len(matches) != 1:
+            return None
+        votes = int(matches[0])
+        return votes if votes >= 0 else None
 
     @staticmethod
     def _extract_description(content: str) -> str:
@@ -171,7 +264,7 @@ class ProductHuntCollector(BaseCollector):
         )
 
     def _parse_product(self, data: Dict) -> Optional[Product]:
-        """解析 Product Hunt GraphQL API 返回的产品对象"""
+        """解析 Product Hunt GraphQL API 返回的产品对象（预留）"""
         try:
             return Product(
                 id=f"ph_{data.get('id', '')}",
