@@ -20,7 +20,11 @@ scheduler:
 # 平台配置
 # rate_limit: 同一平台两次请求的最小间隔（秒）
 # timeout/max_retries: 单次请求超时与重试次数
+#
+# 按"打榜 / 早期 / 开发者 / 社区"分为四组，与 platforms.PLATFORM_GROUPS 一致。
 platforms:
+  # ==================== 一、打榜与每日精选 ====================
+
   producthunt:
     enabled: true
     name: "Product Hunt"
@@ -35,6 +39,88 @@ platforms:
     timeout: 30
     max_retries: 3
     max_items: 50
+
+  fazier:
+    enabled: true
+    name: "Fazier"
+    base_url: "https://fazier.com"
+    # 首页把当日 / 本周 / 本月三组榜单内联在 __NEXT_DATA__ 里，直接取 JSON；
+    # 带票数与评论数，是少数能拿到票数的打榜平台
+    periods:
+      - "posts"          # 当日
+      - "weeklyPosts"    # 本周
+      - "monthlyPosts"   # 本月
+    rate_limit: 3
+    timeout: 30
+    max_retries: 3
+    max_items: 40
+
+  startupage:
+    enabled: true
+    name: "StartuPage"
+    base_url: "https://startupa.ge"
+    # 按 Stripe 验证的月收入（MRR）排名的启动榜单，衡量"真实收入"而非一日热度
+    list_path: "/leaderboard?tab=startups"
+    rate_limit: 3
+    timeout: 30
+    max_retries: 3
+    max_items: 30
+
+  # Cloudflare 整站拦截，需在下方 proxy 段配置稳定出口的代理后再启用
+  uneed:
+    enabled: false
+    name: "Uneed"
+    base_url: "https://www.uneed.best"
+    rate_limit: 3
+    timeout: 30
+    max_retries: 1           # 403 不在重试白名单里，多试无益
+    max_items: 40
+
+  # 同上：Cloudflare 整站拦截
+  microlaunch:
+    enabled: false
+    name: "MicroLaunch"
+    base_url: "https://microlaunch.net"
+    # 专为 Micro-SaaS 设计，曝光周期长达一个月
+    rate_limit: 3
+    timeout: 30
+    max_retries: 1
+    max_items: 30
+
+  # 纯客户端渲染，HTML 内不含榜单数据，HTTP 采集不到；需无头浏览器才有意义
+  peerlist:
+    enabled: false
+    name: "Peerlist Launchpad"
+    base_url: "https://peerlist.io"
+    list_path: "/launchpad"
+    rate_limit: 3
+    timeout: 30
+    max_retries: 1
+    max_items: 30
+
+  # ==================== 二、早期与内测阶段 ====================
+
+  betalist:
+    enabled: true
+    name: "BetaList"
+    base_url: "https://betalist.com"
+    rate_limit: 3
+    timeout: 30
+    max_retries: 3
+    max_items: 30
+
+  betabound:
+    enabled: true
+    name: "Betabound"
+    base_url: "https://www.betabound.com"
+    # 官方 RSS，一次 10 条；偏向招募真实测试员做深度体验与反馈
+    feed_url: "https://www.betabound.com/feed/"
+    rate_limit: 3
+    timeout: 30
+    max_retries: 3
+    max_items: 30
+
+  # ==================== 三、开发者与技术社区 ====================
 
   hackernews:
     enabled: true
@@ -51,14 +137,15 @@ platforms:
     max_retries: 3
     max_items: 40
 
-  betalist:
+  devhunt:
+    # 站点 2025 年改版后已恢复可用（旧版全站返回错误页，曾默认关闭）
     enabled: true
-    name: "BetaList"
-    base_url: "https://betalist.com"
+    name: "DevHunt"
+    base_url: "https://devhunt.org"
     rate_limit: 3
     timeout: 30
     max_retries: 3
-    max_items: 30
+    max_items: 40
 
   github_trending:
     enabled: true
@@ -76,15 +163,29 @@ platforms:
     max_retries: 3
     max_items: 30
 
-  # devhunt.org 目前全站返回错误页，站点已不可用，故默认关闭
-  devhunt:
-    enabled: false
-    name: "DevHunt"
-    base_url: "https://devhunt.org"
+  # ==================== 四、独立创作者社区与国内平台 ====================
+
+  indiehackers:
+    enabled: true
+    name: "Indie Hackers"
+    base_url: "https://www.indiehackers.com"
+    # 产品卡片带 Stripe 验证的月收入（MRR），唯一带真实营收维度的数据源
+    list_path: "/products"
     rate_limit: 3
-    timeout: 20
-    max_retries: 1
-    max_items: 20
+    timeout: 30
+    max_retries: 3
+    max_items: 30
+
+  xinquji:
+    enabled: true
+    name: "新趣集"
+    base_url: "https://xinquji.com"
+    # 官方 RSS，一次 20 条；国内"中国版 Product Hunt"
+    feed_url: "https://xinquji.com/rss"
+    rate_limit: 3
+    timeout: 30
+    max_retries: 3
+    max_items: 30
 
 # 分析配置
 analysis:
@@ -116,6 +217,7 @@ notifications:
   channels: []
 
 # 代理配置（可选），开启后对所有平台生效
+# 启用 uneed / microlaunch 等被 Cloudflare 拦截的平台时，需要在这里配置稳定出口的代理
 proxy:
   enabled: false
   http: ""

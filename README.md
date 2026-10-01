@@ -1,6 +1,6 @@
 # Product Tracker
 
-从 Product Hunt、Hacker News、BetaList、GitHub Trending 定期采集产品数据，归入赛道、算热度与动量，生成**可直接用来做判断**的交互看板。
+从 Product Hunt、Fazier、DevHunt、Indie Hackers、Hacker News、新趣集 等 13 个产品发现平台定期采集数据，归入赛道、算热度与动量，生成**可直接用来做判断**的交互看板。
 
 目标不是堆数据，而是回答三件事：
 
@@ -10,8 +10,8 @@
 
 ## 功能
 
-- **多平台采集**：Product Hunt、Hacker News (Show HN)、BetaList、GitHub Trending
-- **稳定数据源优先**：能用官方 feed / API 就不抓 HTML，并保留 HTML 回退
+- **多平台采集**：打榜类（Product Hunt、Fazier、StartuPage、Uneed、MicroLaunch、Peerlist）、早期内测类（BetaList、Betabound）、开发者类（Hacker News、DevHunt、GitHub Trending）、创作者社区与国内（Indie Hackers、新趣集）
+- **优先取结构化数据**：能用官方 feed / API / 站点内联 JSON 就不抓 HTML，并保留 HTML 回退
 - **跨平台去重**：同一产品出现在多个榜单时合并，并记录它还出现在哪些平台
 - **赛道聚合**：按标题 / 标签 / 正文加权归入约 19 个赛道（「其他」为兜底，不产生趋势信号）
 - **热度归一化**：平台内百分位（0–100），跨平台可比；无公开票数的平台用榜单位次估算并灰色标注
@@ -74,15 +74,46 @@ HTML 报告按 **结论 → 趋势 → 明细** 组织：
 
 ## 支持的平台
 
+按用途分四组，与 `platforms.PLATFORM_GROUPS` 一一对应。
+
+### 一、打榜与每日精选（最接近 Product Hunt）
+
 | 平台 | 数据源 | 热度指标 | 状态 |
 |------|--------|----------|------|
 | Product Hunt | 官方 Atom feed + embed 徽章补票数；回退 hunted.space | 得票数 | ✅ |
-| Hacker News | Algolia 搜索 API，回退 Firebase API | 得票数 / 评论数 | ✅ |
-| BetaList | 站点 HTML | 无 | ✅ |
-| GitHub Trending | 站点 HTML | 周期内新增星数 | ✅ |
-| DevHunt | 站点 HTML | 排名 | ⚠️ 站点已下线，默认关闭 |
+| Fazier | 首页 `__NEXT_DATA__` 内联 JSON；回退 HTML 卡片 | 得票数 | ✅ |
+| StartuPage | `/leaderboard?tab=startups` 榜单行 | Stripe 验证 MRR | ✅ |
+| Uneed | 站点 HTML | 列表顺序 | ⚠️ Cloudflare 整站 403，默认关闭 |
+| MicroLaunch | 站点 HTML | 列表顺序 | ⚠️ Cloudflare 整站 403，默认关闭 |
+| Peerlist Launchpad | 无（纯客户端渲染） | 榜单排名 | ⚠️ 需无头浏览器，默认关闭 |
 
-> Hacker News 优先用 Algolia：官方接口需逐条请求，Algolia 一次返回票数与评论数。
+### 二、早期与内测阶段（找种子用户）
+
+| 平台 | 数据源 | 热度指标 | 状态 |
+|------|--------|----------|------|
+| BetaList | 站点 HTML（另有 feedburner 订阅源） | 无 | ✅ |
+| Betabound | 官方 RSS | 无 | ✅ |
+
+### 三、开发者与技术社区
+
+| 平台 | 数据源 | 热度指标 | 状态 |
+|------|--------|----------|------|
+| Hacker News | Algolia 搜索 API，回退 Firebase API | 得票数 / 评论数 | ✅ |
+| DevHunt | Next.js flight 内联 JSON；回退 HTML 卡片 | 得票数 / 浏览量 | ✅ |
+| GitHub Trending | 站点 HTML | 周期内新增星数 | ✅ |
+
+### 四、创作者社区与国内平台
+
+| 平台 | 数据源 | 热度指标 | 状态 |
+|------|--------|----------|------|
+| Indie Hackers | 站点 HTML（BEM 类名） | Stripe 验证 MRR | ✅ |
+| 新趣集 | 官方 RSS | 无 | ✅ |
+
+> - Hacker News 优先用 Algolia：官方接口需逐条请求，Algolia 一次返回票数与评论数。
+> - Fazier 与 DevHunt 都采用 Next.js，把整份榜单数据内联在页面里。直接解析这份 JSON
+>   比抓 HTML 稳定，而且能拿到票数、分类与定价 —— 这是 2025 年后这两个站点的共同特点。
+> - DevHunt 在 2025 年改版后已恢复可用，旧版本全站返回 Next.js 错误页，本项目据此
+>   曾默认关闭它，现已重新启用。
 
 ## 项目结构
 
@@ -92,8 +123,12 @@ product_tracker/
 ├── main.py              # CLI 入口（采集、历史窗口、去重）
 ├── scheduler.py         # 定时调度（含最小 cron）
 ├── keywords.py          # 词边界匹配（复数、camelCase）
-├── platforms.py         # 平台展示名与热度口径
+├── platforms.py         # 平台展示名、分组与热度口径
 ├── collectors/          # 各平台采集器
+│   ├── base.py             # 基类：限流、重试退避、代理
+│   ├── rss.py              # RSS / Atom 统一解析（新趣集、Betabound 共用）
+│   ├── blocked.py          # 被 Cloudflare 拦截平台的公共基类（Uneed、MicroLaunch）
+│   └── <platform>.py       # 每个平台一个采集器
 ├── analyzers/
 │   ├── analyzer.py         # 热度、赛道动量、今日关注、决策信号
 │   ├── themes.py           # 赛道词表与加权分类
@@ -164,9 +199,23 @@ python -m pytest tests -q
 
 1. 在 `collectors/` 继承 `BaseCollector`，实现 `collect()` / `_parse_product()`
 2. 在 `collectors/__init__.py` 的 `COLLECTORS` 注册
-3. 在 `platforms.py` 加展示名，在 `config.yaml` 加配置段
+3. 在 `platforms.py` 加展示名、分组与热度口径，在 `config.yaml` 加配置段
+4. 补一条离线解析单测（用内联样本驱动，不联网）
 
 基类已提供限流、重试退避、代理与 `_make_request` / `_make_json_request` / `_make_xml_request`。
+
+按数据源类型可以直接复用现成实现，不必从零写：
+
+| 数据源形态 | 参考实现 |
+|------------|----------|
+| 官方 RSS / Atom | 继承基础上用 `collectors/rss.py` 的 `parse_feed()`，见 `xinquji.py`、`betabound.py` |
+| Next.js 内联 JSON（`__NEXT_DATA__`） | `fazier.py` |
+| Next.js flight 负载（RSC 分片推送） | `devhunt.py`，含括号配对切分嵌套对象的 `_iter_flight_objects()` |
+| 站点 HTML | `betalist.py`（BEM 或工具类选择器）、`indiehackers.py` |
+| 整站被 WAF 拦截 | 继承 `collectors/blocked.py` 的 `WafBlockedCollector`，见 `uneed.py` |
+
+> **优先选结构化数据源**：站点用 Next.js 时，先找 `__NEXT_DATA__` 或 `self.__next_f.push`，
+> 里面的字段通常比 DOM 齐全（含票数、分类、定价），也不受样式类名改版影响。
 
 ## 故障排除
 
@@ -177,7 +226,21 @@ python -m pytest tests -q
 | 需要代理 | 打开 `config.yaml` 的 `proxy` |
 | 日志位置 | `logs/tracker.log`（按大小滚动） |
 
-**已知限制**：BetaList 不提供公开票数，因此没有「较上次」动量，热度分按榜单位次估算（灰色条）。Product Hunt 的 Atom feed 本身不含票数，本项目通过官方 `featured.svg` 徽章补齐；若徽章接口异常会自动跳过，退回按 feed 顺序估算。
+## 已知限制
+
+**票数缺口**：BetaList、Betabound 与新趣集不提供公开票数，因此没有「较上次」动量，热度分按榜单位次估算（灰色条）。Product Hunt 的 Atom feed 本身不含票数，本项目通过官方 `featured.svg` 徽章补齐；若徽章接口异常会自动跳过，退回按 feed 顺序估算。
+
+**营收当热度**：Indie Hackers 与 StartuPage 不公开票数，改用 Stripe 验证的月收入（MRR）作热度口径。它衡量「有没有人付钱」，与「今天有多热」不是一回事，读这两行的数据时请按收入理解。另外 Indie Hackers 首页默认只展示 18 条，其中多数产品 MRR 为 $0，只有少数有真实收入。
+
+**受限平台**（默认关闭，见 `config.yaml`）：
+
+| 平台 | 原因 | 启用方式 |
+|------|------|----------|
+| Uneed | 整站由 Cloudflare 保护，对 requests/curl 恒返回 403，无公开 API | 在 `proxy` 段配置稳定出口的代理后置 `enabled: true` |
+| MicroLaunch | 同上 | 同上 |
+| Peerlist Launchpad | 纯客户端渲染，HTML 内不含榜单数据，公开 API 全部 404 | 需改用无头浏览器采集，非本项目的 HTTP 方式 |
+
+三个受限平台的采集器都不会静默返回空结果，而是抛出带原因与处置建议的 `CollectorError`，日志里能看到明确提示。Uneed 与 MicroLaunch 的解析规则因站点无法访问而**尚未用真实页面验证**，首次启用请用 `python main.py run -p uneed -v` 核对解析结果。
 
 ## 许可
 

@@ -26,7 +26,7 @@ python main.py run --format html json markdown --open
 python main.py status
 ```
 
-一次完整采集（4 个平台，约 150 条）耗时 10 秒左右，主要花在各平台的限流等待上。
+一次完整采集（10 个平台，约 280 条）耗时 30 秒左右，主要花在各平台的限流等待上。
 
 ## 📅 日常使用场景
 
@@ -151,19 +151,22 @@ proxy:
 
 各平台热度量级差了三个数量级 —— GitHub Trending 上万星、Hacker News 几十票，
 Product Hunt 与 BetaList 的 Atom/HTML 源本身不含票数；本项目会用官方 embed 徽章
-为 Product Hunt 补票数。BetaList 仍无公开票数。放同一张榜直接比原始值，结果只会是 GitHub 霸榜。
+为 Product Hunt 补票数。BetaList、Betabound 与新趣集仍无公开票数，
+Indie Hackers 与 StartuPage 则改用 Stripe 验证的月收入（MRR）作口径。
+放同一张榜直接比原始值，结果只会是 GitHub 霸榜。
 
 所以看板里有两列：
 
 - **热度分**：该产品在**所属平台内**的百分位（0-100），跨平台可比，用它排序才有意义。
-- **原始值**：各平台自己的口径（票数 / 星数），无公开数据时显示 `—`。
+- **原始值**：各平台自己的口径（票数 / 星数 / MRR），无公开数据时显示 `—`。
 - **较上次**：相对上一次采集的票数变化，回答「它还在涨吗」。
 
 没有真实热度数据的平台，热度分由列表顺序折算，热度条显示为**灰色**，提醒这只是弱信号。
 每个平台的具体口径写在报告附录的「热度口径说明」里。
 
-「较上次」在 Hacker News、GitHub Trending、Product Hunt（经徽章补齐）上有值。
-BetaList 仍无公开票数，热度按榜单位次估算（灰色条），「较上次」显示 `—`；
+「较上次」在 Hacker News、GitHub Trending、Product Hunt（经徽章补齐）、Fazier、DevHunt 上有值。
+BetaList、Betabound、新趣集无公开票数，热度按榜单位次估算（灰色条），「较上次」显示 `—`；
+Indie Hackers 与 StartuPage 的 MRR 变动缓慢，短期看这一列基本不变；
 首次出现的产品同样显示 `—`。按这一列排序时，无数据的行始终排在最后。
 
 热度分高只说明「现在热」，「较上次」才说明「还在涨」。两者结合看：热度分高但动量为 0 的多是
@@ -204,17 +207,45 @@ BetaList 仍无公开票数，热度按榜单位次估算（灰色条），「�
 python main.py run -v
 ```
 
-调试日志会打印每个请求与解析结果。BetaList 与 GitHub Trending 依赖页面结构，站点改版后需要更新对应收集器的选择器；Product Hunt 与 Hacker News 走 feed/API，通常更稳定。
+调试日志会打印每个请求与解析结果。BetaList、GitHub Trending、Indie Hackers、StartuPage 依赖页面结构，站点改版后需要更新对应收集器的选择器；Product Hunt、Hacker News、新趣集、Betabound 走 feed/API；Fazier 与 DevHunt 走站点内联的 Next.js JSON，通常比 DOM 更稳定。
 
 ### 某个平台整体失败
 
 日志会明确写出原因，例如：
 
 ```
-ERROR - devhunt unavailable: devhunt.org is unavailable (all pages return an error page).
+ERROR - uneed unavailable: https://www.uneed.best 返回 403 或不可达：该站整站由 Cloudflare 保护，
+requests 客户端无法直接访问，且无公开 API。请在 config.yaml 的 proxy 段配置一个稳定出口的代理后再启用，
+或保持 platforms.uneed.enabled=false。
 ```
 
 单个平台失败不会中断整次运行，其余平台照常采集。
+
+### uneed / microlaunch 采不到数据
+
+这两个站整站由 Cloudflare 保护，对非浏览器客户端恒返回 403，且没有公开 API，因此默认关闭。
+要启用它们，需要让流量从别的出口出去：
+
+```yaml
+proxy:
+  enabled: true
+  http: "http://127.0.0.1:7890"
+  https: "http://127.0.0.1:7890"
+```
+
+代理会对**所有**平台生效（见 `main.py` 的 `init_collectors`），所以只在确实需要时打开。
+换到出口干净的代理后，`403` 通常会消失；若仍失败，说明该代理 IP 也在 Cloudflare 的黑名单里。
+注意这两个采集器的解析规则尚未用真实页面验证，首次启用请加 `-v` 核对解析条数：
+
+```bash
+python main.py run -p uneed microlaunch -v
+```
+
+### peerlist 采不到数据
+
+Peerlist Launchpad 是纯客户端渲染页面，HTML 里没有任何榜单数据，公开 API 也全部 404，
+用 HTTP 采集拿不到东西。该平台的采集器会直接报错说明原因，而不是静默返回空列表。
+如果确实需要这个数据源，得改用带无头浏览器（Playwright）的采集方式。
 
 ### 请求超时或被限流
 
@@ -260,5 +291,5 @@ python main.py clean
 python -m pytest tests -q
 ```
 
-110 个离线测试，覆盖各平台解析、跨平台去重、关键词匹配、赛道分类、热度归一化、历史窗口、
+144 个离线测试，覆盖各平台解析、跨平台去重、关键词匹配、赛道分类、热度归一化、历史窗口、
 单品动量、决策信号、cron 与报告生成，不需要联网。
